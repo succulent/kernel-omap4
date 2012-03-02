@@ -277,6 +277,12 @@ static void omap_gem_detach_pages(struct drm_gem_object *obj)
 	omap_obj->pages = NULL;
 }
 
+/* get buffer flags */
+uint32_t omap_gem_flags(struct drm_gem_object *obj)
+{
+	return to_omap_bo(obj)->flags;
+}
+
 /** get mmap offset */
 static uint64_t mmap_offset(struct drm_gem_object *obj)
 {
@@ -764,6 +770,26 @@ int omap_gem_put_paddr(struct drm_gem_object *obj)
 		}
 	}
 fail:
+	mutex_unlock(&obj->dev->struct_mutex);
+	return ret;
+}
+
+/* Get rotated scanout address (only valid if already pinned), at the
+ * specified orientation and x,y offset from top-left corner of buffer
+ * (only valid for tiled 2d buffers)
+ */
+int omap_gem_rotated_paddr(struct drm_gem_object *obj, uint32_t orient,
+		int x, int y, dma_addr_t *paddr)
+{
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	int ret = -EINVAL;
+
+	mutex_lock(&obj->dev->struct_mutex);
+	if ((omap_obj->paddr_cnt > 0) && omap_obj->block &&
+			(omap_obj->flags & OMAP_BO_TILED)) {
+		*paddr = tiler_tsptr(omap_obj->block, orient, x, y);
+		ret = 0;
+	}
 	mutex_unlock(&obj->dev->struct_mutex);
 	return ret;
 }
@@ -1350,7 +1376,7 @@ void omap_gem_init(struct drm_device *dev)
 		 */
 		usergart[i].height = h;
 		usergart[i].height_shift = ilog2(h);
-		usergart[i].stride_pfn = tiler_stride(fmts[i]) >> PAGE_SHIFT;
+		usergart[i].stride_pfn = tiler_stride(fmts[i], 0) >> PAGE_SHIFT;
 		usergart[i].slot_shift = ilog2((PAGE_SIZE / h) >> i);
 		for (j = 0; j < NUM_USERGART_ENTRIES; j++) {
 			struct usergart_entry *entry = &usergart[i].entry[j];
