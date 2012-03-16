@@ -26,10 +26,18 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 	if (!obj)
 		return -ENOENT;
 
+	/* don't allow imported buffers to be re-exported */
+	if (obj->import_attach) {
+		drm_gem_object_unreference_unlocked(obj);
+		return -EINVAL;
+	}
+
 	/* we only want to pass DRM_CLOEXEC which is == O_CLOEXEC */
 	flags = args->flags & DRM_CLOEXEC;
 	if (obj->export_dma_buf) {
-		/* TODO what if flags have changed? */
+		get_file(obj->export_dma_buf->file);
+		args->fd = dma_buf_fd(obj->export_dma_buf, flags);
+		drm_gem_object_unreference_unlocked(obj);
 	} else {
 		obj->export_dma_buf = dev->driver->prime_export(dev, obj, flags);
 		if (IS_ERR_OR_NULL(obj->export_dma_buf)) {
@@ -39,10 +47,8 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 			drm_gem_object_unreference_unlocked(obj);
 			return PTR_ERR(obj->export_dma_buf);
 		}
+		args->fd = dma_buf_fd(obj->export_dma_buf, flags);
 	}
-
-	args->fd = dma_buf_fd(obj->export_dma_buf, flags);
-
 	return 0;
 }
 
