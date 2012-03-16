@@ -431,8 +431,10 @@ static struct drm_driver driver = {
 	.ioctls = nouveau_ioctls,
 	.fops = &nouveau_driver_fops,
 
-	.prime_export = nouveau_gem_prime_export,
-	.prime_import = nouveau_gem_prime_import,
+	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
+	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
+	.gem_prime_export = nouveau_gem_prime_export,
+	.gem_prime_import = nouveau_gem_prime_import,
 
 	.gem_init_object = nouveau_gem_object_new,
 	.gem_free_object = nouveau_gem_object_del,
