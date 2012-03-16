@@ -3,6 +3,22 @@
 #include <linux/hash.h>
 #include "drmP.h"
 
+/*
+ * Object references and lifetime overview
+ * On the exporter the dma_buf holds a reference to the GEM object
+ * It takes this reference in handle_to_fd_ioctl, when it first
+ * calls prime_export and stores the object into the dma_buf priv.
+ * This reference is released when the dma_buf object goes away
+ * in the driver .release function.
+ *
+ * On the importer the GEM object holds a reference to the dma_buf.
+ * It takes that reference in the fd_to_handle ioctl.
+ * It calls dma_buf_get, creates an attachment to it and stores the
+ * attachment in the GEM object. When this attachment is destroyed
+ * when the imported object is destroyed, we remove the attachment
+ * and drop the reference to the dma_buf.
+ *
+ */
 struct drm_prime_member {
 	struct list_head entry;
 	struct dma_buf *dma_buf;
