@@ -917,11 +917,17 @@ struct drm_driver {
 	void (*gem_close_object) (struct drm_gem_object *, struct drm_file *);
 
 	/* prime: */
+	/* export handle -> fd (see drm_gem_prime_handle_to_fd() helper) */
+	int (*prime_handle_to_fd)(struct drm_device *dev, struct drm_file *file_priv,
+				uint32_t handle, uint32_t flags, int *prime_fd);
+	/* import fd -> handle (see drm_gem_prime_fd_to_handle() helper) */
+	int (*prime_fd_to_handle)(struct drm_device *dev, struct drm_file *file_priv,
+				int prime_fd, uint32_t *handle);
 	/* export GEM -> dmabuf */
-	struct dma_buf * (*prime_export)(struct drm_device *dev,
+	struct dma_buf * (*gem_prime_export)(struct drm_device *dev,
 				struct drm_gem_object *obj, int flags);
 	/* import dmabuf -> GEM */
-	struct drm_gem_object * (*prime_import)(struct drm_device *dev,
+	struct drm_gem_object * (*gem_prime_import)(struct drm_device *dev,
 				struct dma_buf *dma_buf);
 
 	/* vga arb irq handler */
@@ -1545,6 +1551,13 @@ extern int drm_bufs_info(struct seq_file *m, void *data);
 extern int drm_vblank_info(struct seq_file *m, void *data);
 extern int drm_clients_info(struct seq_file *m, void* data);
 extern int drm_gem_name_info(struct seq_file *m, void *data);
+
+
+extern int drm_gem_prime_handle_to_fd(struct drm_device *dev,
+		struct drm_file *file_priv, uint32_t handle, uint32_t flags,
+		int *prime_fd);
+extern int drm_gem_prime_fd_to_handle(struct drm_device *dev,
+		struct drm_file *file_priv, int prime_fd, uint32_t *handle);
 
 extern int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 					struct drm_file *file_priv);

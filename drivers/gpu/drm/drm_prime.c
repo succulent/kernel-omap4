@@ -30,20 +30,16 @@ struct drm_prime_member {
 	uint32_t handle;
 };
 
-int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
-				 struct drm_file *file_priv)
+
+/* should these be in drm_prime.c or drm_gem.c?? */
+
+int drm_gem_prime_handle_to_fd(struct drm_device *dev,
+		struct drm_file *file_priv, uint32_t handle, uint32_t flags,
+		int *prime_fd)
 {
-	struct drm_prime_handle *args = data;
 	struct drm_gem_object *obj;
-	int flags;
 
-	if (!drm_core_check_feature(dev, DRIVER_PRIME))
-		return -EINVAL;
-
-	if (!dev->driver->prime_export)
-		return -ENOSYS;
-
-	obj = drm_gem_object_lookup(dev, file_priv, args->handle);
+	obj = drm_gem_object_lookup(dev, file_priv, handle);
 	if (!obj)
 		return -ENOENT;
 
@@ -53,14 +49,13 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
-	/* we only want to pass DRM_CLOEXEC which is == O_CLOEXEC */
-	flags = args->flags & DRM_CLOEXEC;
 	if (obj->export_dma_buf) {
 		get_file(obj->export_dma_buf->file);
-		args->fd = dma_buf_fd(obj->export_dma_buf, flags);
+		*prime_fd = dma_buf_fd(obj->export_dma_buf, flags);
 		drm_gem_object_unreference_unlocked(obj);
 	} else {
-		obj->export_dma_buf = dev->driver->prime_export(dev, obj, flags);
+		obj->export_dma_buf =
+				dev->driver->gem_prime_export(dev, obj, flags);
 		if (IS_ERR_OR_NULL(obj->export_dma_buf)) {
 			/* normally the created dma-buf takes ownership of the ref,
 			 * but if that fails then drop the ref
@@ -68,56 +63,47 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 			drm_gem_object_unreference_unlocked(obj);
 			return PTR_ERR(obj->export_dma_buf);
 		}
-		args->fd = dma_buf_fd(obj->export_dma_buf, flags);
+		*prime_fd = dma_buf_fd(obj->export_dma_buf, flags);
 	}
 	return 0;
 }
+EXPORT_SYMBOL(drm_gem_prime_handle_to_fd);
 
-int drm_prime_fd_to_handle_ioctl(struct drm_device *dev, void *data,
-				 struct drm_file *file_priv)
+int drm_gem_prime_fd_to_handle(struct drm_device *dev,
+		struct drm_file *file_priv, int prime_fd, uint32_t *handle)
 {
-	struct drm_prime_handle *args = data;
 	struct dma_buf *dma_buf;
 	struct drm_gem_object *obj;
-	uint32_t handle;
 	int ret;
 
-	if (!drm_core_check_feature(dev, DRIVER_PRIME))
-		return -EINVAL;
-
-	if (!dev->driver->prime_import)
-		return -ENOSYS;
-
-	dma_buf = dma_buf_get(args->fd);
+	dma_buf = dma_buf_get(prime_fd);
 	if (IS_ERR(dma_buf))
 		return PTR_ERR(dma_buf);
 
 	ret = drm_prime_lookup_fd_handle_mapping(&file_priv->prime,
-			dma_buf, &handle);
+			dma_buf, handle);
 	if (!ret) {
 		dma_buf_put(dma_buf);
-		args->handle = handle;
 		return 0;
 	}
 
 	/* never seen this one, need to import */
-	obj = dev->driver->prime_import(dev, dma_buf);
+	obj = dev->driver->gem_prime_import(dev, dma_buf);
 	if (IS_ERR_OR_NULL(obj)) {
 		ret = PTR_ERR(obj);
 		goto fail_put;
 	}
 
-	ret = drm_gem_handle_create(file_priv, obj, &handle);
+	ret = drm_gem_handle_create(file_priv, obj, handle);
 	drm_gem_object_unreference_unlocked(obj);
 	if (ret)
 		goto fail_put;
 
 	ret = drm_prime_insert_fd_handle_mapping(&file_priv->prime,
-			dma_buf, handle);
+			dma_buf, *handle);
 	if (ret)
 		goto fail;
 
-	args->handle = handle;
 	return 0;
 
 fail:
@@ -128,6 +114,41 @@ fail:
 fail_put:
 	dma_buf_put(dma_buf);
 	return ret;
+}
+EXPORT_SYMBOL(drm_gem_prime_fd_to_handle);
+
+int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
+				 struct drm_file *file_priv)
+{
+	struct drm_prime_handle *args = data;
+	uint32_t flags;
+
+	if (!drm_core_check_feature(dev, DRIVER_PRIME))
+		return -EINVAL;
+
+	if (!dev->driver->prime_handle_to_fd)
+		return -ENOSYS;
+
+	/* we only want to pass DRM_CLOEXEC which is == O_CLOEXEC */
+	flags = args->flags & DRM_CLOEXEC;
+
+	return dev->driver->prime_handle_to_fd(dev, file_priv,
+			args->handle, flags, &args->fd);
+}
+
+int drm_prime_fd_to_handle_ioctl(struct drm_device *dev, void *data,
+				 struct drm_file *file_priv)
+{
+	struct drm_prime_handle *args = data;
+
+	if (!drm_core_check_feature(dev, DRIVER_PRIME))
+		return -EINVAL;
+
+	if (!dev->driver->prime_fd_to_handle)
+		return -ENOSYS;
+
+	return dev->driver->prime_fd_to_handle(dev, file_priv,
+			args->fd, &args->handle);
 }
 
 struct sg_table *drm_prime_pages_to_sg(struct page **pages, int nr_pages)
