@@ -14,6 +14,7 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 {
 	struct drm_prime_handle *args = data;
 	struct drm_gem_object *obj;
+	int flags;
 
 	if (!drm_core_check_feature(dev, DRIVER_PRIME))
 		return -EINVAL;
@@ -25,10 +26,12 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 	if (!obj)
 		return -ENOENT;
 
+	/* we only want to pass DRM_CLOEXEC which is == O_CLOEXEC */
+	flags = args->flags & DRM_CLOEXEC;
 	if (obj->export_dma_buf) {
 		/* TODO what if flags have changed? */
 	} else {
-		obj->export_dma_buf = dev->driver->prime_export(dev, obj, args->flags);
+		obj->export_dma_buf = dev->driver->prime_export(dev, obj, flags);
 		if (IS_ERR_OR_NULL(obj->export_dma_buf)) {
 			/* normally the created dma-buf takes ownership of the ref,
 			 * but if that fails then drop the ref
@@ -38,7 +41,7 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 		}
 	}
 
-	args->fd = dma_buf_fd(obj->export_dma_buf, args->flags);
+	args->fd = dma_buf_fd(obj->export_dma_buf, flags);
 
 	return 0;
 }
