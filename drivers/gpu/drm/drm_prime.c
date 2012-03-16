@@ -38,7 +38,7 @@ int drm_prime_handle_to_fd_ioctl(struct drm_device *dev, void *data,
 		}
 	}
 
-	args->fd = dma_buf_fd(obj->export_dma_buf);
+	args->fd = dma_buf_fd(obj->export_dma_buf, args->flags);
 
 	return 0;
 }
