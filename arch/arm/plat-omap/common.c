@@ -25,6 +25,7 @@
 #include <plat/omap-secure.h>
 #include <plat/remoteproc.h>
 
+
 #define NO_LENGTH_CHECK 0xffffffff
 
 struct omap_board_config_kernel *omap_board_config __initdata;
@@ -65,7 +66,6 @@ const void *__init omap_get_var_config(u16 tag, size_t *len)
 
 void __init omap_reserve(void)
 {
-	omapdrm_reserve_vram();
 	omapfb_reserve_sdram_memblock();
 	omap_vram_reserve_sdram_memblock();
 	omap_dsp_reserve_sdram_memblock();
