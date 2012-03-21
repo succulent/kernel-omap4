@@ -1462,12 +1462,6 @@ void omap_gem_vm_close(struct vm_area_struct *vma)
 	drm_gem_vm_close(vma);
 }
 
-/* get buffer flags */
-uint32_t omap_gem_flags(struct drm_gem_object *obj)
-{
-	return to_omap_bo(obj)->flags;
-}
-
 void * omap_gem_priv(struct drm_gem_object *obj, int mapper_id)
 {
 	BUG_ON((mapper_id >= MAX_MAPPERS) || (mapper_id < 0));
