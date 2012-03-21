@@ -16,6 +16,7 @@
 #ifndef OMAP_DMM_TILER_H
 #define OMAP_DMM_TILER_H
 
+#include <plat/cpu.h>
 #include "omap_drv.h"
 #include "tcm.h"
 
@@ -72,10 +73,6 @@ struct tiler_block {
 #define TIL_ADDR(x, orient, a)\
 	((u32) (x) | (orient) | ((a) << SHIFT_ACC_MODE))
 
-/* externally accessible functions */
-int omap_dmm_init(struct drm_device *dev);
-int omap_dmm_remove(void);
-
 #ifdef CONFIG_DEBUG_FS
 int tiler_map_show(struct seq_file *s, void *arg);
 #endif
@@ -93,11 +90,15 @@ int tiler_release(struct tiler_block *block);
 
 /* utilities */
 dma_addr_t tiler_ssptr(struct tiler_block *block);
+dma_addr_t tiler_tsptr(struct tiler_block *block, uint32_t orient,
+		uint32_t x, uint32_t y);
 uint32_t tiler_stride(enum tiler_fmt fmt);
 size_t tiler_size(enum tiler_fmt fmt, uint16_t w, uint16_t h);
 size_t tiler_vsize(enum tiler_fmt fmt, uint16_t w, uint16_t h);
 void tiler_align(enum tiler_fmt fmt, uint16_t *w, uint16_t *h);
+bool dmm_is_initialized(void);
 
+extern struct platform_driver omap_dmm_driver;
 
 /* GEM bo flags -> tiler fmt */
 static inline enum tiler_fmt gem2fmt(uint32_t flags)
@@ -125,6 +126,11 @@ static inline bool validfmt(enum tiler_fmt fmt)
 	default:
 		return false;
 	}
+}
+
+static inline int dmm_is_available(void)
+{
+	return cpu_is_omap44xx();
 }
 
 #endif

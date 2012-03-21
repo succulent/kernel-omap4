@@ -18,6 +18,7 @@
  */
 
 #include "omap_drv.h"
+#include "omap_dmm_tiler.h"
 
 #include "drm_crtc.h"
 #include "drm_crtc_helper.h"
@@ -59,6 +60,20 @@ static const struct format formats[] = {
 	{ OMAP_DSS_COLOR_UYVY,        DRM_FORMAT_UYVY,     {{2, 1}}, true },
 };
 
+/* convert from overlay's pixel formats bitmask to an array of fourcc's */
+uint32_t omap_framebuffer_get_formats(uint32_t *pixel_formats,
+		uint32_t max_formats, enum omap_color_mode supported_modes)
+{
+	uint32_t nformats = 0;
+	int i = 0;
+
+	for (i = 0; i < ARRAY_SIZE(formats) && nformats < max_formats; i++)
+		if (formats[i].dss_format & supported_modes)
+			pixel_formats[nformats++] = formats[i].pixel_format;
+
+	return nformats;
+}
+
 /* per-plane info for the fb: */
 struct plane {
 	struct drm_gem_object *bo;
@@ -87,7 +102,7 @@ static int omap_framebuffer_create_handle(struct drm_framebuffer *fb,
 static void omap_framebuffer_destroy(struct drm_framebuffer *fb)
 {
 	struct omap_framebuffer *omap_fb = to_omap_framebuffer(fb);
-	int i, n = drm_format_num_planes(omap_fb->format->pixel_format);
+	int i, n = drm_format_num_planes(fb->pixel_format);
 
 	DBG("destroy: FB ID: %d (%p)", fb->base.id, fb);
 
@@ -123,39 +138,16 @@ static const struct drm_framebuffer_funcs omap_framebuffer_funcs = {
 	.dirty = omap_framebuffer_dirty,
 };
 
-/* pins buffer in preparation for scanout */
-int omap_framebuffer_pin(struct drm_framebuffer *fb)
+static uint32_t get_inc_addr(struct plane *plane, const struct format *format,
+		int n, int x, int y)
 {
-	struct omap_framebuffer *omap_fb = to_omap_framebuffer(fb);
-	int ret, i, n = drm_format_num_planes(omap_fb->format->pixel_format);
+	uint32_t offset;
 
-	for (i = 0; i < n; i++) {
-		struct plane *plane = &omap_fb->planes[i];
-		ret = omap_gem_get_paddr(plane->bo, &plane->paddr, true);
-		if (ret)
-			goto fail;
-	}
+	offset = plane->offset +
+			(x * format->planes[n].stride_bpp) +
+			(y * plane->pitch / format->planes[n].sub_y);
 
-	return 0;
-
-fail:
-	while (--i > 0) {
-		struct plane *plane = &omap_fb->planes[i];
-		omap_gem_put_paddr(plane->bo);
-	}
-	return ret;
-}
-
-/* releases buffer when done with scanout */
-void omap_framebuffer_unpin(struct drm_framebuffer *fb)
-{
-	struct omap_framebuffer *omap_fb = to_omap_framebuffer(fb);
-	int i, n = drm_format_num_planes(omap_fb->format->pixel_format);
-
-	for (i = 0; i < n; i++) {
-		struct plane *plane = &omap_fb->planes[i];
-		omap_gem_put_paddr(plane->bo);
-	}
+	return plane->paddr + offset;
 }
 
 /* update ovl info for scanout, handles cases of multi-planar fb's, etc.
@@ -166,31 +158,99 @@ void omap_framebuffer_update_scanout(struct drm_framebuffer *fb, int x, int y,
 	struct omap_framebuffer *omap_fb = to_omap_framebuffer(fb);
 	const struct format *format = omap_fb->format;
 	struct plane *plane = &omap_fb->planes[0];
-	unsigned int offset;
+	uint32_t orient;
 
-	offset = plane->offset +
-			(x * format->planes[0].stride_bpp) +
-			(y * plane->pitch / format->planes[0].sub_y);
+	/*
+	 * we don't have any userspace API yet for setting rotation,
+	 * so just hard-code it to zero-degree (no rotation/mirroring)
+	 * for now:
+	 */
+	orient = 0;
 
-	info->color_mode   = format->dss_format;
-	info->paddr        = plane->paddr + offset;
-	info->screen_width = plane->pitch / format->planes[0].stride_bpp;
+	info->color_mode = format->dss_format;
+
+	if (omap_gem_flags(plane->bo) & OMAP_BO_TILED) {
+		omap_gem_rotated_paddr(plane->bo, orient, x, y, &info->paddr);
+		info->burst_type   = OMAP_DSS_BURST_2D;
+		info->screen_width = tiler_stride(gem2fmt(
+				omap_gem_flags(plane->bo)));
+	} else {
+		info->paddr        = get_inc_addr(plane, format, 0, x, y);
+		info->burst_type   = OMAP_DSS_BURST_INC;
+		info->screen_width = plane->pitch;
+	}
+
+	/* convert to pixels: */
+	info->screen_width /= format->planes[0].stride_bpp;
 
 	if (format->dss_format == OMAP_DSS_COLOR_NV12) {
 		plane = &omap_fb->planes[1];
-		offset = plane->offset +
-				(x * format->planes[1].stride_bpp) +
-				(y * plane->pitch / format->planes[1].sub_y);
-		info->p_uv_addr = plane->paddr + offset;
+
+		if (info->burst_type == OMAP_DSS_BURST_2D) {
+			WARN_ON(!(omap_gem_flags(plane->bo) & OMAP_BO_TILED));
+			omap_gem_rotated_paddr(plane->bo, orient, x/2, y/2,
+					&info->p_uv_addr);
+		} else {
+			info->paddr = get_inc_addr(plane, format, 1, x, y);
+		}
 	} else {
 		info->p_uv_addr = 0;
 	}
 }
 
+/* Call for unpin 'a' (if not NULL), and pin 'b' (if not NULL).  Although
+ * buffers to unpin are just just pushed to the unpin fifo so that the
+ * caller can defer unpin until vblank.
+ *
+ * Note if this fails (ie. something went very wrong!), all buffers are
+ * unpinned, and the caller disables the overlay.  We could have tried
+ * to revert back to the previous set of pinned buffers but if things are
+ * hosed there is no guarantee that would succeed.
+ */
+int omap_framebuffer_replace(struct drm_framebuffer *a,
+		struct drm_framebuffer *b, void *arg,
+		void (*unpin)(void *arg, struct drm_gem_object *bo))
+{
+	int ret = 0, i, na, nb;
+	struct omap_framebuffer *ofba = to_omap_framebuffer(a);
+	struct omap_framebuffer *ofbb = to_omap_framebuffer(b);
+
+	na = a ? drm_format_num_planes(a->pixel_format) : 0;
+	nb = b ? drm_format_num_planes(b->pixel_format) : 0;
+
+	for (i = 0; i < max(na, nb); i++) {
+		struct plane *pa, *pb;
+
+		pa = (i < na) ? &ofba->planes[i] : NULL;
+		pb = (i < nb) ? &ofbb->planes[i] : NULL;
+
+		if (pa) {
+			unpin(arg, pa->bo);
+			pa->paddr = 0;
+		}
+
+		if (pb && !ret)
+			ret = omap_gem_get_paddr(pb->bo, &pb->paddr, true);
+	}
+
+	if (ret) {
+		/* something went wrong.. unpin what has been pinned */
+		for (i = 0; i < nb; i++) {
+			struct plane *pb = &ofba->planes[i];
+			if (pb->paddr) {
+				unpin(arg, pb->bo);
+				pb->paddr = 0;
+			}
+		}
+	}
+
+	return ret;
+}
+
 struct drm_gem_object *omap_framebuffer_bo(struct drm_framebuffer *fb, int p)
 {
 	struct omap_framebuffer *omap_fb = to_omap_framebuffer(fb);
-	if (p >= drm_format_num_planes(omap_fb->format->pixel_format))
+	if (p >= drm_format_num_planes(fb->pixel_format))
 		return NULL;
 	return omap_fb->planes[p].bo;
 }
@@ -248,6 +308,24 @@ void omap_framebuffer_flush(struct drm_framebuffer *fb,
 		}
 	}
 }
+
+#ifdef CONFIG_DEBUG_FS
+void omap_framebuffer_describe(struct drm_framebuffer *fb, struct seq_file *m)
+{
+	struct omap_framebuffer *omap_fb = to_omap_framebuffer(fb);
+	int i, n = drm_format_num_planes(fb->pixel_format);
+
+	seq_printf(m, "fb: %dx%d@%4.4s\n", fb->width, fb->height,
+			(char *)&fb->pixel_format);
+
+	for (i = 0; i < n; i++) {
+		struct plane *plane = &omap_fb->planes[i];
+		seq_printf(m, "   %d: offset=%d pitch=%d, obj: ",
+				i, plane->offset, plane->pitch);
+		omap_gem_describe(plane->bo, m);
+	}
+}
+#endif
 
 struct drm_framebuffer *omap_framebuffer_create(struct drm_device *dev,
 		struct drm_file *file, struct drm_mode_fb_cmd2 *mode_cmd)
@@ -328,7 +406,7 @@ struct drm_framebuffer *omap_framebuffer_init(struct drm_device *dev,
 
 		size = pitch * mode_cmd->height / format->planes[i].sub_y;
 
-		if (size > (bos[i]->size - mode_cmd->offsets[i])) {
+		if (size > (omap_gem_mmap_size(bos[i]) - mode_cmd->offsets[i])) {
 			dev_err(dev->dev, "provided buffer object is too small! %d < %d\n",
 					bos[i]->size - mode_cmd->offsets[i], size);
 			ret = -EINVAL;
@@ -337,8 +415,8 @@ struct drm_framebuffer *omap_framebuffer_init(struct drm_device *dev,
 
 		plane->bo     = bos[i];
 		plane->offset = mode_cmd->offsets[i];
-		plane->pitch  = mode_cmd->pitches[i];
-		plane->paddr  = pitch;
+		plane->pitch  = pitch;
+		plane->paddr  = 0;
 	}
 
 	drm_helper_mode_fill_fb_struct(fb, mode_cmd);
